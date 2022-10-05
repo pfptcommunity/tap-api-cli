@@ -16,23 +16,23 @@ declare -r SECRET="<enter_secret_here>"
 ```
 
 ### Top Level API Options
-![command_line_options_main](https://user-images.githubusercontent.com/83429267/194098502-a222c83c-61ae-4855-af19-0e4d22c28760.png)
+![command_line_options_main](https://user-images.githubusercontent.com/83429267/194107940-244e0315-c6b6-4c5e-bcbe-252253d4ede2.png)
+
 
 ### SIEM API Options
-![command_line_options_siem](https://user-images.githubusercontent.com/83429267/194098953-51c5fcde-6c23-4d58-b4ca-49ab0ab52ea8.png)
-
+![command_line_options_siem](https://user-images.githubusercontent.com/83429267/194108181-5f5d6a2e-a300-47ac-a4f3-3c96a0b7b244.png)
 
 ### Forensics API Options
-![command_line_options_forensics](https://user-images.githubusercontent.com/83429267/194099110-7add88c8-33ad-4efb-a2da-fc8944a0964b.png)
+![command_line_options_forensics](https://user-images.githubusercontent.com/83429267/194108442-aa537093-4c34-4e8e-81db-ff349161cf71.png)
 
 ### Campaign API Options
-![command_line_options_campaign](https://user-images.githubusercontent.com/83429267/194099393-8bc589d7-d234-499a-b2fa-60365b34a95c.png)
+![command_line_options_campaign](https://user-images.githubusercontent.com/83429267/194108854-0603891e-9a4d-4ce0-8eef-d84019ed1695.png)
 
 ### People API Options
-![command_line_options_people](https://user-images.githubusercontent.com/83429267/194099469-122688b7-823e-49c2-b649-d6a59a2e5acf.png)
+![command_line_options_people](https://user-images.githubusercontent.com/83429267/194108890-d3a01db9-91be-48c5-9dbc-c40b9728f030.png)
 
 ### Threat API Options
-![command_line_options_threat](https://user-images.githubusercontent.com/83429267/194099590-de88a301-4b21-4709-8a11-214cfbae3227.png)
+![command_line_options_threat](https://user-images.githubusercontent.com/83429267/194108922-4ff42caf-8eea-404d-bdb0-f52d64c0a517.png)
 
 # Typical SIEM API Usage Examples
 
