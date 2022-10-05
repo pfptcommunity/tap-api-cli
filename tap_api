@@ -748,19 +748,17 @@ do
 	shift
 done
 
-
-
 # Validate single argument for Endpoint Type was passed. We want to prevent the user from making a mistake
 [ $AE_COUNT -gt 1 ] && opt_error "Avaliable endpoint options --all, --issues, --clicks-blocked, --clicks-permitted, --messages-blocked and --messages-delivered can not be combined."
 
 # Validate single argument for Output Format was passed. We want to prevent the user from making a mistake
-[ $OF_COUNT -gt 1 ] && opt_error "Formatting options --format-syslog, --format-json and --format-cef can not be combined."
+[ $OF_COUNT -gt 1 ] && opt_error "Formatting options --format-syslog and --format-json can not be combined."
 
 # Validate single argument for Time Interval was passed. We want to prevent the user from making a mistake
 [ $TI_COUNT -gt 1 ] && opt_error "Required time options --interval, --since-seconds and --since-time can not be combined."
 
 # Validate single argument for Threat Type was passed. We want to prevent the user from making a mistake
-[ $TT_COUNT -gt 1 ] && opt_error "Threat type options --format-syslog, --format-json and --format-cef can not be combined."
+[ $TT_COUNT -gt 1 ] && opt_error "Threat type options --format-syslog and --format-json can not be combined."
 
 # Validate if native Time Interval was provided along with custom time interval. 
 [[ $TI_COUNT -gt 0 ]] && [[ ! -z ${RS+x}  || ! -z ${RE+x} ]] && opt_error "Option --range-start and --range-end can not be used with --interval, --since-seconds or --since-time."
