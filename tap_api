@@ -1,0 +1,1326 @@
+#!/bin/bash
+################################################################################
+#
+#          Name: Ludvik Jerabek
+#          Date: 10/18/2016
+#       Version: 1.13
+#
+#       Summary: Command line tool supports TAP, Forensics, Campaign, and People APIs.
+#
+#       Change History:
+#
+#       10/18/2016 - Initial Release
+#       11/19/2016 - Added API selector
+#       11/20/2016 - Added Forensics API
+#       11/20/2016 - Added Campaign API
+#       11/23/2016 - Added rest_call function for generic API calls
+#       04/03/2017 - Fixed --output switch bug
+#       05/31/2019 - Fixed --interval format validation
+#       05/31/2019 - Fixed issues with UTC dates using --data-urlencode for curl
+#       02/04/2020 - Added People API VAPs    
+#       06/06/2020 - Fixed CURL rvalue issue          
+#       05/19/2021 - Added People API Clickers
+#       08/30/2021 - Fixed bug help output for People API
+#       05/03/2022 - Added Threat API Support 
+#       07/25/2022 - Fixed bug in range based searching temp files failing
+#       07/27/2022 - Improved the range based search and using PID for unique log
+#
+#
+################################################################################
+
+declare -r PRINCIPAL="<enter_principal_here>"
+declare -r SECRET="<enter_secret_here>"
+declare -r API_SCHEME="https"
+declare -r API_SERVER="tap-api-v2.proofpoint.com"
+declare -r API_VERSION="v2"
+declare -r API_SVC_SIEM=siem
+declare -r API_SVC_FORENSICS=forensics
+declare -r API_SVC_CAMPAIGN=campaign
+declare -r API_SVC_PEOPLE=people
+declare -r API_SVC_THREAT=threat
+declare -r REST_CERT_ARG="--insecure"
+declare -r REST_CURLRC="--user $PRINCIPAL:$SECRET"
+
+# Function to get script directory
+function get_script_dir () {
+     SOURCE="${BASH_SOURCE[0]}"
+     # While $SOURCE is a symlink, resolve it
+     while [ -h "$SOURCE" ]; do
+          DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+          SOURCE="$( readlink "$SOURCE" )"
+          # If $SOURCE was a relative symlink (so no "/" as prefix, need to resolve it relative to the symlink base directory
+          [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+     done
+     DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+     echo "$DIR"
+}
+
+# Get current location of the script
+readonly SCRIPT_PATH=$(get_script_dir)
+
+# Date Validation Functions
+function validate_iso8601_date() {
+	local -r re='^([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\3([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?|(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[1-6])))([T\s]((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?(\17[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?$'
+	echo "$*" | grep -P "${re}" > /dev/null 2>&1
+	return $?
+}
+
+function validate_iso8601_duration() {
+	local -r re='^(R\d*\/)?P(?:\d+(?:\.\d+)?Y)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?W)?(?:\d+(?:\.\d+)?D)?(?:T(?:\d+(?:\.\d+)?H)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?S)?)?$'
+	echo "$*" | grep -P "${re}" > /dev/null 2>&1
+	return $?
+}
+
+function validate_iso8601_date_date() {
+	local -r re='^([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\3([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?|(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[1-6])))([T\s]((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?(\17[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?(\/)([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\3([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?|(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[1-6])))([T\s]((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?(\17[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?$'
+	echo "$*" | grep -P "${re}" > /dev/null 2>&1
+	return $?
+}        
+
+function validate_iso8601_date_duration() {
+	local -r re='^(R\d*\/)?([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\4([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?|(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[1-6])))([T\s]((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?(\18[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?(\/)P(?:\d+(?:\.\d+)?Y)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?W)?(?:\d+(?:\.\d+)?D)?(?:T(?:\d+(?:\.\d+)?H)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?S)?)?$'
+	echo "$*" | grep -P "${re}" > /dev/null 2>&1
+	return $?
+}
+
+function validate_iso8601_duration_date() {
+	local -r re='^(R\d*\/)?P(?:\d+(?:\.\d+)?Y)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?W)?(?:\d+(?:\.\d+)?D)?(?:T(?:\d+(?:\.\d+)?H)?(?:\d+(?:\.\d+)?M)?(?:\d+(?:\.\d+)?S)?)?\/([\+-]?\d{4}(?!\d{2}\b))((-?)((0[1-9]|1[0-2])(\4([12]\d|0[1-9]|3[01]))?|W([0-4]\d|5[0-2])(-?[1-7])?|(00[1-9]|0[1-9]\d|[12]\d{2}|3([0-5]\d|6[1-6])))([T\s]((([01]\d|2[0-3])((:?)[0-5]\d)?|24\:?00)([\.,]\d+(?!:))?)?(\18[0-5]\d([\.,]\d+)?)?([zZ]|([\+-])([01]\d|2[0-3]):?([0-5]\d)?)?)?)?$'
+	echo "$*" | grep -P "${re}" > /dev/null 2>&1
+	return $?
+}
+
+function validate_iso8601_all() {
+	# Sent initial state as not matched
+	local result=1
+	# Any matches will result in 0 making the overall result 0
+	validate_iso8601_date "$*"; result=$(($result & $?))
+	validate_iso8601_duration "$*"; result=$(($result & $?))
+	validate_iso8601_date_date "$*"; result=$(($result & $?))
+	validate_iso8601_date_duration "$*"; result=$(($result & $?))
+	validate_iso8601_duration_date "$*"; result=$(($result & $?))
+	return $result
+}
+
+# Function makes web service calls
+# This function returns the error from CURL
+# If not file name is passed, stdout is used to display the request results
+function rest_call() {
+	# Set pipe fail so if any failures happen during a pipe we can get the overall result in $?
+	set -o pipefail
+
+	local OPTIND
+	local rval=0
+	local REST_SCHEME
+	local REST_SERVER
+	local REST_API_VERSION
+	local REST_API_SERVICE_BASE
+	local REST_API_ENDPOINT
+	local REST_API_PARAMS
+	local OUTPUT_FILE
+
+	local -r SHORTOPTS=""
+	local -r LONGOPTS="scheme:,server:,version:,service:,endpoint:,params:,output:"
+
+	# ARGS must be predefined to avoid return value of 0 after getopt call.
+	local ARGS
+	ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@")
+	# Exit if required argument is missing.
+	[ $? -ne 0 ] && exit 1
+	eval set -- "$ARGS"
+
+	while true
+	do
+		case $1 in
+			--scheme)
+				REST_SCHEME="$2"
+				shift
+			;;
+			--server)
+				REST_SERVER="$2"
+				shift
+			;;
+			--version)
+				REST_API_VERSION="$2"
+				shift
+			;;
+			--service)
+				REST_API_SERVICE_BASE="$2"
+				shift
+			;;
+			--endpoint)
+				REST_API_ENDPOINT="$2"
+				shift
+			;;
+			--params)
+				REST_API_PARAMS="$2"
+				shift
+			;;
+			--output)
+				OUTPUT_FILE="$2"
+				shift
+			;;
+		    --)
+		            shift
+		            break
+		    ;;
+		    *)
+				echo "[Error] Unhanded option: $1"
+				exit 1
+			;;
+		esac
+		shift
+	done
+
+	[[ ! -z "${REST_SCHEME+x}" && ! -n "${REST_SCHEME}" ]] && opt_error "Option arugment --scheme value can not be an empty string."
+	[[ ! -z "${REST_SERVER+x}" && ! -n "${REST_SERVER}" ]] && opt_error "Option arugment --server value can not be an empty string."
+	[[ ! -z "${REST_API_VERSION+x}" && ! -n "${REST_API_VERSION}" ]] && opt_error "Option arugment --version value can not be an empty string."
+	[[ ! -z "${REST_API_SERVICE_BASE+x}" && ! -n "${REST_API_SERVICE_BASE}" ]] && opt_error "Option arugment --service value can not be an empty string."
+	[[ ! -z "${REST_API_ENDPOINT+x}" && ! -n "${REST_API_ENDPOINT}" ]] && opt_error "Option arugment --endpoint value can not be an empty string."
+	[[ ! -z "${REST_API_PARAMS+x}" && ! -n "${REST_API_PARAMS}" ]] && opt_error "Option arugment --params value can not be an empty string."
+	[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option arugment --output value can not be an empty string."
+
+	local REST_SERVICE
+	[ ! -z ${REST_SCHEME+x} ] && REST_SERVICE="${REST_SERVICE}${REST_SCHEME}"
+	[ ! -z ${REST_SERVER+x} ] && REST_SERVICE="${REST_SERVICE}://${REST_SERVER}"
+	[ ! -z ${REST_API_VERSION+x} ] && REST_SERVICE="${REST_SERVICE}/${REST_API_VERSION}"
+	[ ! -z ${REST_API_SERVICE_BASE+x} ] && REST_SERVICE="${REST_SERVICE}/${REST_API_SERVICE_BASE}"
+	[ ! -z ${REST_API_ENDPOINT+x} ] && REST_SERVICE="${REST_SERVICE}/${REST_API_ENDPOINT}"
+	[ ! -z ${REST_API_PARAMS+x} ] && REST_SERVICE="${REST_SERVICE} ${REST_API_PARAMS}"
+
+	# Silent only display error, No Globbing, Ouput the HTTP_CODE and DOWNLOAD_SIZE
+	local CURL_OPTS="-sS -g -G -w %{http_code}|%{size_download}"
+
+
+	# If output file is defined and not empty	
+	if [[ ! -z "${OUTPUT_FILE+x}" && -n "${OUTPUT_FILE}" ]] 
+	then
+		# Output date to a file instead of STDOUT
+		REST_SERVICE="-o ${OUTPUT_FILE} ${REST_SERVICE}"
+	else
+		# If no file is provided show errors, no globbing, header, GET
+		CURL_OPTS="-i -sS -g -G"
+	fi
+
+	# In the event we will have cerficate checks a some point
+	local CURL="${CURL_OPTS} ${REST_CERT_ARG} ${REST_CURLRC} ${REST_SERVICE}"	
+	
+	#echo "curl ${CURL}"
+	#return 0	
+
+	local result
+	local rval
+	local -A http_result
+
+	# If output file is defined and not empty	
+	if [[ ! -z "${OUTPUT_FILE+x}" && -n "${OUTPUT_FILE}" ]] 
+	then
+		result=$(curl ${CURL})
+		rval=$?
+		if [[ $rval -eq 0 || $result =~ ^([0-9]+\|[0-9]+)$ ]]
+		then
+			http_result[code]="$(echo -nE "$result" | cut -d'|' -f1)"
+			http_result[bytes]="$(echo -nE "$result" | cut -d'|' -f2)"
+		fi
+	else
+		# This section process the request and pushes it to .
+		result=$(curl ${CURL} | hexdump -v -e '/1 "%02X"')
+		rval=$?
+		if [ $rval -eq 0 ]
+		then
+			# Get header offset HTTP/1.0 0d0a0d0a | HTTP/1.1 may require a change
+			local offset=$(echo -nE "$result" | grep -iaob -m 1 "0d0a0d0a" | cut -d':' -f1)
+			# Extract the header leave single <offset>\r\n
+			local headers=$(echo -nE "$result" | head --bytes=$((offset+4)))
+			# Skip past the marker <offset>0D0A0D0A<start_pos> is 9 characters past the offset
+			http_result[data]=$(echo -nE "$result" | tail --bytes=+$((offset+9)))
+			# Since the data is stored in hex string we divide by 2
+			http_result[bytes]=$((${#http_result[data]}/2))
+			# Get rid of the result value.		
+			unset result
+			local IFS=$'\n'	
+			# Convert the hex back to bytes, remove the \r leaving only \n newlines
+			for i in `echo -nE "$headers" | xxd -r -p | tr -d '\r'`
+			do 
+				if [[ "$i" =~ ^(HTTP/[0-9]+[.][0-9]+)[[:space:]]+([0-9]+)[[:space:]]?(.*)$ ]]
+				then				
+					#http_result[version]="${BASH_REMATCH[1]}"
+					http_result[code]="${BASH_REMATCH[2]}"
+					http_result[status]="${BASH_REMATCH[3]}"
+				fi
+			done
+			# Print the raw data as output
+			echo -nE "${http_result[data]}" | xxd -r -p
+		fi
+	fi
+	
+	if [[ $rval -eq 0 ]] #|| ${http_result[code]} =~ ^[0-9]+$ ]]
+	then
+		case "${http_result[code]}" in
+			200)
+				echo "[${http_result[code]}] Success at least one record matching the specified criteria was found and returned" >&2
+			;;
+			204)
+				echo "[${http_result[code]}] No content returned" >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			400)
+				echo "[${http_result[code]}] The request is missing a mandatory request parameter, a parameter contains data which is incorrectly formatted, or the API doesn't have enough information to determine the identity of the customer."  >&2
+				rm -vf ${OUTPUT_FILE}			
+			;;
+			401)
+				echo "[${http_result[code]}] There is no authorization information included in the request, the authorization information is incorrect, or the user is not authorized." >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			404)
+				echo "[${http_result[code]}] The campaign ID or threat ID does not exist."  >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			403)
+				echo "[${http_result[code]}] The user is authenticated for the service but is not authorized to access data for the given customer."  >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			429)
+				echo "[${http_result[code]}] The user has made too many requests over the past 24 hours and has been throttled"  >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			500)
+				echo "[${http_result[code]}] Internal server error"  >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+			*)
+				echo "[${http_result[code]}] Unhandled HTTP error" >&2
+				rm -vf ${OUTPUT_FILE}
+			;;
+		esac
+	fi
+	# Return CURL error
+	return $rval
+}
+
+# General API Usage Information
+function api_usage() {
+cat << EOF
+Usage: $(basename $0) [options]
+
+This tool provides a command line interface to the Proofpoint API. The Proofpoint 
+API provides access to TAP data, Forensics data, and Campaign data.
+
+The TAP SIEM API allows administrators the ability to periodically download detailed 
+information about several types of TAP events in a SIEM-compatible, vendor-neutral
+format. 
+
+The Forensics API allows administrators to pull detailed forensic evidences about
+individual threats or campaigns observed in their environment. These evidences 
+could be used as indicators of compromise to confirm infection on a host, as 
+supplementary data to enrich and correlate against other security intelligence 
+sources, or to orchestrate updates to security endpoints to prevent exposure and 
+infection.
+
+The Campaign API allows administrators to pull specific details about campaign such as
+their description, the actor, malware family, and techniques associated with the campaign
+and the threat variants which have been associated with the campaign.
+
+The People API allows administrators to identify which users in their organizations 
+were most attacked during a specified period.
+
+API Component (Required Option):
+EOF
+
+cat << EOF | column -s\& -t
+--siem-api & Selects TAP SIEM API interface
+--forensics-api & Selects forensics API interface
+--campaign-api & Selects campaign API interface
+--people-api & Selects people API interface
+--threat-api & Selects threat API interface
+
+EOF
+
+cat << EOF
+
+EOF
+
+}
+
+# Usage information for --siem-api
+function siem_usage(){
+cat << EOF
+Usage: $(basename $0) --siem-api [options]
+
+The TAP SIEM API allows integration with these solutions by giving administrators
+the ability to periodically download detailed information about several types of
+TAP events in a SIEM-compatible, vendor-neutral format. This tool provides a
+command line interface to the TAP SIEM API.
+
+Data Endpoint (Required Option):
+EOF
+
+cat << EOF | column -s\& -t
+--all & Fetch events for all clicks and messages relating to known threats.
+--issues & Fetch events for clicks to malicious URLs permitted and messages 
+ & delivered containing a known attachment threats.
+--clicks-blocked & Fetch events for clicks to malicious URLs blocked. 
+--clicks-permitted & Fetch events for clicks to malicious URLs permitted. 
+--messages-blocked & Fetch events for messages blocked which contained a known threat.
+--messages-delivered & Fetch events for messages delivered which contained a known threat.
+EOF
+
+cat << EOF
+
+These options are used to specify the desired time range for the threat data query. The
+non-native --range-start and --range-end can be used together, however; all other time
+interval types can not be combined.
+
+--start-range and --end-range accepts unix date formats as shown below:
+
+"@2123429142"
+"2016/10/01"
+"2016/10/01 + 1 days + 30 minutes + 30 second"
+"2016-05-01T12:00:00Z"
+"now - 40 days"
+
+Time Interval (Required Option):
+EOF
+
+cat << EOF | column -s\& -t
+--interval & A string containing an ISO8601-formatted interval. If this interval overlaps
+ & with previous requests for data, records from the previous request may be 
+ & duplicated. The minimum interval is thirty seconds. The maximum interval is 
+ & one hour.
+--since-seconds & An integer representing a time window in seconds from the current API server time. 
+ & The start of the window is the current API server time, rounded to the nearest 
+ & minute, less the number of seconds provided. The end of the window is the current
+ & API server time rounded to the nearest minute. If JSON output is selected, the end 
+ & time is included in the returned result. 
+--since-time & A string containing an ISO8601 date. It represents the start of the data retrieval 
+ & period. The end of the period is determined by current API server time rounded to 
+ & the nearest minute. If JSON output is selected, the end time is included in the 
+ & returned result.
+--range-start & Start of a date or time range.
+--range-end & End of a date or time range. Default is "now"
+EOF
+
+cat << EOF
+
+These options specify the format in which threat data is returned. If no 
+option is specified, syslog will be used as the default. Format options
+can not be combined.
+
+Output Formats (Optional)
+EOF
+
+cat << EOF | column -s\& -t
+--format-syslog & Data returned in syslog format.
+--format-json & Data returned in JavaScript Object Notation (JSON) format.
+--output & Output file to store results otherwise results are sent to 
+ & stdout and status to stderr.
+EOF
+
+cat << EOF
+
+These options specify which threat type will be returned in the threat data. 
+If no options is is specified, both threat types are returned. Threat type
+options can not be combined.
+
+Threat Type Filters (Optional):
+EOF
+
+cat << EOF | column -s\& -t
+--threat-type-url & Data returned will be URL based threats.
+--threat-type-attachment & Data returned will be attachment based threats.
+EOF
+
+
+cat << EOF
+
+EOF
+
+}
+
+# Usage information for --forensics-api
+function forensics_usage() {
+cat << EOF
+Usage: $(basename $0) --forensics-api [options]
+
+The Forensics API allows administrators to pull detailed forensic evidences about
+individual threats or campaigns observed in their environment. These evidences 
+could be used as indicators of compromise to confirm infection on a host, as 
+supplementary data to enrich and correlate against other security intelligence 
+sources, or to orchestrate updates to security endpoints to prevent exposure and 
+infection. 
+
+
+EOF
+
+cat << EOF | column -s\& -t
+--campaign-id & String used to define the campaign identifier.
+--threat-id & String used to define the threat identifier.
+--campaign-forensics & Optional argument used with --threat-id to return aggregate
+ & forensics for an entire campaign. If the threat id is 
+ & associated with a campaign.
+
+
+EOF
+
+cat << EOF
+
+Output Control (Optional)
+EOF
+
+cat << EOF | column -s\& -t
+--output & Output file to store results otherwise results are sent to 
+ & stdout and status to stderr.
+EOF
+
+cat << EOF
+
+EOF
+
+}
+
+# Usage information for --campaign-api
+function campaign_usage() {
+
+cat << EOF
+Usage: $(basename $0) --campaign-api [options]
+
+The Campaign API allows administrators to pull specific details about campaign such as
+their description, the actor, malware family, and techniques associated with the campaign and
+the threat variants which have been associated with the campaign.
+
+EOF
+
+cat << EOF | column -s\& -t
+--campaign-id & String used to define the campaign identifier (required).
+
+EOF
+
+cat << EOF
+
+Output Control (Optional)
+EOF
+
+cat << EOF | column -s\& -t
+--output & Output file to store results otherwise results are sent to 
+ & stdout and status to stderr.
+EOF
+
+cat << EOF
+
+EOF
+
+}
+
+# Usage information for --people-api
+function people_usage() {
+
+cat << EOF
+Usage: $(basename $0) --people-api [options]
+
+The People API allows administrators to identify which users in their organizations 
+were most attacked during a specified period.
+
+Data Endpoint / Window (Required Options):
+
+EOF
+
+cat << EOF | column -s\& -t
+--vap & Fetch the identities of Very Attacked People within your 
+ & organization for a given period.
+--clickers & Fetch the identities and attack index of the top clickers within your 
+ & organization for a given period. 
+--window-14 & Returns 14 days of data should be retrieved.
+--window-30 & Returns 30 days of data should be retrieved.
+--window-90 & Returns 90 days of data should be retrieved.
+
+EOF
+
+cat << EOF
+
+Size and Page (Optional):
+
+EOF
+
+cat << EOF | column -s\& -t
+--size & The maximum number of VAPs to produce in the response. The
+ & attackIndex value determine the order of results. Defaults to 1000.
+--page & The page of results to return, in multiples of the specified 
+ & size. Defaults to 1.
+
+EOF
+
+cat << EOF
+
+Output Control (Optional)
+EOF
+
+cat << EOF | column -s\& -t
+--output & Output file to store results otherwise results are sent to 
+ & stdout and status to stderr.
+EOF
+
+cat << EOF
+
+EOF
+
+}
+
+# Usage information for --threat-api
+function threat_usage() {
+
+cat << EOF
+Usage: $(basename $0) --campaign-api [options]
+
+The Threat API allows administrators to pull detailed attributes about 
+individual threats observed in their environment.It can be used to retrieve
+more intelligence for threats identified in the SIEM or Campaign API responses.
+
+EOF
+
+cat << EOF | column -s\& -t
+--threat-id & String used to define the threat identifier (required).
+
+EOF
+
+cat << EOF
+
+Output Control (Optional)
+EOF
+
+cat << EOF | column -s\& -t
+--output & Output file to store results otherwise results are sent to 
+ & stdout and status to stderr.
+EOF
+
+cat << EOF
+
+EOF
+
+}
+
+function opt_error() {
+	echo "$*" 1>&2
+	exit 1
+}
+
+
+# Main function performs all of the work. This also reduces the chances of global variables being mangled.
+function siem_main() {
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) --siem-api [options]"
+	echo "Try '$(basename $0) --siem-api --help' for more information."
+	exit 1
+fi
+
+# Used for local getopt
+local OPTIND
+# Endpoint options count
+local AE_COUNT=0
+local AE
+# Output format options count
+local OF_COUNT=0
+# Time interval options count
+local TI_COUNT=0
+# Threat type options count
+local TT_COUNT=0
+# Range start
+local RS
+# Range end
+local RE
+# Time information format
+local TIF
+# Time Information data
+local TI
+# Threat type 
+local TT
+# Output format
+local OF
+# Command line output file is stored in this variable
+local OUTPUT_FILE
+local OUTPUT_SWITCH
+
+local -r SHORTOPTS=""
+local -r LONGOPTS="all,issues,clicks-blocked,clicks-permitted,messages-blocked,messages-delivered,interval:,since-seconds:,since-time:,range-start:,range-end:,format-syslog,format-json,output:,threat-type-url,threat-type-attachment"
+
+# ARGS must be predefined to avoid return value of 0 after getopt call.
+local ARGS
+ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@")
+
+# Exit if required argument is missing.
+[ $? -ne 0 ] && exit 1
+eval set -- "$ARGS"
+
+while true
+do
+	case $1 in
+		--all)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="all"
+		;;
+		--issues)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="issues"	
+		;;
+		--clicks-blocked)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="clicks/blocked"
+		;;
+		--clicks-permitted)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="clicks/premitted"
+		;;
+		--messages-blocked)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="messages/blocked"
+		;;
+		--messages-delivered)
+			# Prevent undesired result
+			AE_COUNT=$((AE_COUNT+1))
+			AE="messages/delivered"
+		;;
+		--interval)
+			# Prevent undesired result
+			TI_COUNT=$((TI_COUNT+1))
+			TIF="interval"
+			TI="$2"
+			shift
+		;;
+		--since-seconds)
+			# Prevent undesired result
+			TI_COUNT=$((TI_COUNT+1))
+			TIF="since-seconds"
+			TI="$2"
+			shift
+		;;
+		--since-time)
+			# Prevent undesired result
+			TI_COUNT=$((TI_COUNT+1))
+			TIF="since-time"
+			TI="$2"
+			shift
+		;;
+		--range-start)
+            RS="$2"
+			shift
+		;;
+		--range-end)
+			RE="$2"
+			shift
+		;;
+		--format-syslog)	
+			# Prevent undesired result
+			OF_COUNT=$((OF_COUNT+1))
+			OF="syslog"
+		;;
+		--format-json)
+			# Prevent undesired result
+			OF_COUNT=$((OF_COUNT+1))
+			OF="JSON"
+		;;
+		--output)
+			# Strip slash of path
+			OUTPUT_SWITCH="--output"
+			OUTPUT_FILE="${2%/}"
+			shift
+		;;
+		--threat-type-url)
+			TT_COUNT=$((TT_COUNT+1))
+			TT="URL"
+		;;
+		--threat-type-attachment)
+		    TT_COUNT=$((TT_COUNT+1))
+			TT="ATTACHMENT"	
+		;;
+	    --)
+	            shift
+	            break
+	    ;;
+	    *)
+			echo "[Error] Unhanded option: $1"
+			exit 1
+		;;
+	esac
+	shift
+done
+
+
+
+# Validate single argument for Endpoint Type was passed. We want to prevent the user from making a mistake
+[ $AE_COUNT -gt 1 ] && opt_error "Avaliable endpoint options --all, --issues, --clicks-blocked, --clicks-permitted, --messages-blocked and --messages-delivered can not be combined."
+
+# Validate single argument for Output Format was passed. We want to prevent the user from making a mistake
+[ $OF_COUNT -gt 1 ] && opt_error "Formatting options --format-syslog, --format-json and --format-cef can not be combined."
+
+# Validate single argument for Time Interval was passed. We want to prevent the user from making a mistake
+[ $TI_COUNT -gt 1 ] && opt_error "Required time options --interval, --since-seconds and --since-time can not be combined."
+
+# Validate single argument for Threat Type was passed. We want to prevent the user from making a mistake
+[ $TT_COUNT -gt 1 ] && opt_error "Threat type options --format-syslog, --format-json and --format-cef can not be combined."
+
+# Validate if native Time Interval was provided along with custom time interval. 
+[[ $TI_COUNT -gt 0 ]] && [[ ! -z ${RS+x}  || ! -z ${RE+x} ]] && opt_error "Option --range-start and --range-end can not be used with --interval, --since-seconds or --since-time."
+
+# Validate that all defined variables are not empty
+[[ ! -z "${TI+x}" && ! -n "${TI}" ]] && opt_error "Option arugment --${TIF} value can not be an empty string."
+[[ ! -z "${RS+x}" && ! -n "${RS}" ]] && opt_error "Option argument --range-start value can not be an empty string."
+[[ ! -z "${RE+x}" && ! -n "${RE}" ]] && opt_error "Option argument --range-end value can not be an empty string."
+[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be an empty string."
+
+# Validate output file is not a directory
+[[ ! -z "${OUTPUT_FILE+x}" && -d "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be a directory."
+
+# Option --range-end can not be defined without range start.
+[[ ! -z ${RE+x} && -z ${RS+x} ]] && opt_error "Option --range-end must be used wih --range-start."
+
+# Convert date start information to seconds
+if [ ! -z ${RS+x} ]
+then
+	RS=$(date --date="${RS}" +%s 2>/dev/null)
+	[ $? -ne 0 ] &&  opt_error "Invalid --range-start date or time."
+	# If no range end id defined we default to "now"
+	[ -z ${RE+x} ] && RE="now"
+fi
+
+# Convert date end information to seconds
+if [ ! -z ${RE+x} ]
+then
+	RE=$(date --date="${RE}" +%s 2>/dev/null)
+	[ $? -ne 0 ] &&  opt_error "Invalid --range-end date or time."	
+fi
+
+# Validate the time range for --range-start --range-end
+# Note: RE and RS are converted to seconds so numeric compare is ok.
+if [[ ! -z ${RE+x} && ! -z ${RS+x} ]]
+then
+	if [ "$RS" -ge "$RE" ]
+	then
+		opt_error "Option --range-start must be an earlier date than --range-end."
+    else
+		# This can be done since we prevent mixing --range-start/end with other interval options.
+		TI_COUNT=$((TI_COUNT+1))
+		TIF="range"
+	fi
+fi
+
+# Validate that endpoint type was chosen
+[ $AE_COUNT -eq 0 ] && opt_error "Endpoint type must be specified using --all, --issues, --clicks-blocked, --clicks-permitted, --messages-blocked or --messages-delivered."
+
+# This count cannot be zero, otherwise no interval type was specified.
+[ $TI_COUNT -eq 0 ] && opt_error "A time interval option must be specified using --interval, --since-seconds, --since-time, or --range-start."
+
+# Based on the Time Interval Format process the request
+case $TIF in
+		interval)
+			validate_iso8601_all "$TI"
+			if [ $? -eq 0 ]
+			then
+				local API_PARAMS
+				[ ! -z ${OF+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode format=${OF}"
+				API_PARAMS="${API_PARAMS} --data-urlencode ${TIF}=${TI}"
+				rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_SIEM}" --endpoint "${AE}" --params "${API_PARAMS}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+				exit $?
+			else
+				echo "The time format provided with --interval is invalid"
+				exit 1;
+			fi
+		;;
+		since-seconds)
+			TIF="sinceSeconds"
+			if [[ "$TI" =~ ^$ || ! $2 =~ ^([0]|[1-9][0-9]*)$ ]]
+			then
+				local API_PARAMS
+				[ ! -z ${OF+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode format=${OF}"
+				API_PARAMS="${API_PARAMS} --data-urlencode ${TIF}=${TI}"
+				rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_SIEM}" --endpoint "${AE}" --params "${API_PARAMS}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+				exit $?
+			else
+				echo "The time format provided with --since-seconds is invalid"
+				exit 1;
+			fi
+		;;
+		since-time)
+			local API_PARAMS
+			TIF="sinceTime"
+			validate_iso8601_date "$TI"
+			if [ $? -eq 0 ]
+			then
+				[ ! -z ${OF+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode format=${OF}"
+				API_PARAMS="${API_PARAMS} --data-urlencode ${TIF}=${TI}"
+				rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_SIEM}" --endpoint "${AE}" --params "${API_PARAMS}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+				exit $?
+			else
+				echo "The time format provided with --since-time is invalid"
+				exit 1;
+			fi
+		;;
+		range)
+			local API_PARAMS
+			local s_iso
+			local e_iso
+			local ext
+			local rval=0
+			local step=3600;
+			[ -z ${OF+x} ] && ext=syslog || ext="${OF}"
+			# This is a special case for range-start and range-end
+			for (( s = RS ; s < RE; s += $step))
+			{
+					[ $(((RE-s))) -lt 3600 ] && step=$(((RE-s)))	
+					s_iso="$(date --date=@$s +%FT%T%:z)"
+					e_iso="$(date --date=@$((s+3600)) +%FT%T%:z)"
+					[ ! -z ${OF+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode format=${OF}"
+					API_PARAMS="${API_PARAMS} --data-urlencode interval=${s_iso}/${e_iso}"
+					rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_SIEM}" --endpoint "${AE}" --params "${API_PARAMS}" --output "/tmp/$$_RANGE_${RS}_${RE}_PART_${s_iso}_${e_iso}.${ext}"
+					[[ $? -ne 0 ]] && ((rval++))
+					API_PARAMS=""
+			}
+	
+			if [[ ! -z $OUTPUT_FILE ]]
+			then
+				cat /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext} > "${OUTPUT_FILE}"
+						
+			else
+				cat /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext} 
+			fi
+			rm -v /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext}
+			return $rval
+		;;
+		*)
+			echo "Error: Unknown time format"
+		;; 
+esac
+}
+
+
+# Main function performs all of the work. This also reduces the chances of global variables being mangled.
+function forensics_main() {
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) --forensics-api [options]"
+	echo "Try '$(basename $0) --forensics-api --help' for more information."
+	exit 1
+fi
+
+# Used for local getopt
+local OPTIND
+# Command line output file is stored in this variable
+local OUTPUT_FILE
+local OUTPUT_SWITCH
+local TF
+local TI
+local -r SHORTOPTS=""
+local -r LONGOPTS="threat-id:,campaign-forensics,campaign-id:,output:"
+# ARGS must be predefined to avoid return value of 0 after getopt call.
+local ARGS
+
+ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@") 
+
+# Exit if required argument is missing.
+[ $? -ne 0 ] && exit 1
+eval set -- "$ARGS"
+
+while true
+do
+	case $1 in
+		--threat-id)
+			TI="$2"
+			shift
+		;;
+		--campaign-forensics)
+			CF=1
+		;;
+		--campaign-id)
+			CI="$2"
+			shift
+		;;
+		--output)
+			# Strip slash of path
+			OUTPUT_SWITCH="--output"
+			OUTPUT_FILE="${2%/}"
+			shift
+		;;
+	    --)
+	            shift
+	            break
+	    ;;
+	    *)
+			echo "[Error] Unhanded option: $1"
+			exit 1
+		;;
+	esac
+	shift
+done
+
+# Option --threat-id and --campaign-id can not be used together.
+[[ ! -z ${CI+x} && ! -z ${TI+x} ]] && opt_error "Option --threat-id can not be used wih --campaign-id."
+# Option --campaign-forensics and --threat-id can not be used together.
+[[ ! -z ${CI+x} && ! -z ${CF+x} ]] && opt_error "Option --campaign-forensics can only be used with --threat-id."
+
+# Validate that all defined variables are not empty
+[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be an empty string."
+[[ ! -z "${CI+x}" && ! -n "${CI}" ]] && opt_error "Option arugment --campaign-id value can not be an empty string."
+[[ ! -z "${TI+x}" && ! -n "${TI}" ]] && opt_error "Option arugment --threat-id value can not be an empty string."
+
+
+# Validate output file is not a directory
+[[ ! -z "${OUTPUT_FILE+x}" && -d "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be a directory."
+
+
+local API_PARAMS
+[ ! -z ${TI+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode threatId=${TI}"
+[ ! -z ${CI+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode campaignId=${CI}"
+[ ! -z ${CF+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode includeCampaignForensics=true"
+
+rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_FORENSICS}" --params="${API_PARAMS}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+}
+
+# Main function performs all of the work. This also reduces the chances of global variables being mangled.
+function campaign_main() {
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) --campaign-api [options]"
+	echo "Try '$(basename $0) --campaign-api --help' for more information."
+	exit 1
+fi
+
+
+# Used for local getopt
+local OPTIND
+# Command line output file is stored in this variable
+local OUTPUT_FILE
+local OUTPUT_SWITCH
+local CI
+local -r SHORTOPTS=""
+local -r LONGOPTS="campaign-id:,output:"
+
+# ARGS must be predefined to avoid return value of 0 after getopt call.
+local ARGS
+ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@")
+# Exit if required argument is missing.
+[ $? -ne 0 ] && exit 1
+eval set -- "$ARGS"
+
+while true
+do
+	case $1 in
+		--campaign-id)
+			CI="$2"
+			shift
+		;;
+		--output)
+			# Strip slash of path
+			OUTPUT_SWITCH="--output"
+			OUTPUT_FILE="${2%/}"
+			shift
+		;;
+	    --)
+	            shift
+	            break
+	    ;;
+	    *)
+			echo "[Error] Unhanded option: $1"
+			exit 1
+		;;
+	esac
+	shift
+done
+
+
+
+# Validate that all defined variables are not empty
+[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be an empty string."
+[[ ! -z "${CI+x}" && ! -n "${CI}" ]] && opt_error "Option arugment --campaign-id value can not be an empty string."
+
+# Validate output file is not a directory
+[[ ! -z "${OUTPUT_FILE+x}" && -d "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be a directory."
+
+rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_CAMPAIGN}" --endpoint "${CI}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+		
+}
+
+# Main function performs all of the work. This also reduces the chances of global variables being mangled.
+function people_main() {
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) --people-api [options]"
+	echo "Try '$(basename $0) --people-api --help' for more information."
+	exit 1
+fi
+
+
+# Used for local getopt
+local OPTIND
+# Command line output file is stored in this variable
+local OUTPUT_FILE
+local OUTPUT_SWITCH
+local AE_COUNT=0
+local WI_COUNT=0
+local EP
+local WI
+local SI
+local PG
+local -r SHORTOPTS=""
+local -r LONGOPTS="vap,clickers,window-14,window-30,window-90,size:,page:,output:"
+
+# ARGS must be predefined to avoid return value of 0 after getopt call.
+local ARGS
+ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@")
+# Exit if required argument is missing.
+[ $? -ne 0 ] && exit 1
+eval set -- "$ARGS"
+
+while true
+do
+	case $1 in
+		--vap)
+			AE_COUNT=$((AE_COUNT+1))
+			EP="vap"
+		;;
+		--clickers)
+			AE_COUNT=$((AE_COUNT+1))
+			EP="top-clickers"
+		;;
+		--window-14)
+			WI_COUNT=$((WI_COUNT+1))
+			WI="14"
+		;;
+		--window-30)
+			WI_COUNT=$((WI_COUNT+1))
+			WI="30"
+		;;
+		--window-90)
+			WI_COUNT=$((WI_COUNT+1))
+			WI="90"
+		;;
+		--size)
+			SI="$2"
+			shift
+		;;
+		--page)
+			PG="$2"
+			shift
+		;;		
+		--output)
+			# Strip slash of path
+			OUTPUT_SWITCH="--output"
+			OUTPUT_FILE="${2%/}"
+			shift
+		;;
+	    --)
+	            shift
+	            break
+	    ;;
+	    *)
+			echo "[Error] Unhanded option: $1"
+			exit 1
+		;;
+	esac
+	shift
+done
+
+
+# Validate that endpoint type was chosen eg. VAP
+[ $AE_COUNT -eq 0 ] && opt_error "Endpoint type must be specified using --vap"
+
+# Validate single argument for Endpoint Type was passed. We want to prevent the user from making a mistake
+[ $AE_COUNT -gt 1 ] && opt_error "Avaliable endpoint options --vap and --clickers can not be combined."
+
+# Validate that endpoint type was chosen eg. VAP
+[ $WI_COUNT -eq 0 ] && opt_error "Endpoint type must be specified using --window-14, --window-30 or --window-90"
+
+[[ ! -z "${SI+x}" && ! -n "${SI}" ]] && opt_error "Option arugment --size value can not be an empty string."
+[[ ! -z "${PG+x}" && ! -n "${PG}" ]] && opt_error "Option arugment --page value can not be an empty string."
+
+# Value is not empty and a number 
+[[ ! -z ${SI+x} && ! ${SI} =~ ^([1-9][0-9]*)$ ]] && opt_error "Option arugment --size value must be an integer greater than zero."
+[[ ! -z ${PG+x} && ! ${PG} =~ ^([1-9][0-9]*)$ ]] && opt_error "Option arugment --page value must be an integer greater than zero."
+
+# Validate that all defined variables are not empty
+[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be an empty string."
+
+
+local API_PARAMS
+[ ! -z ${WI+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode window=${WI}"
+[ ! -z ${SI+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode size=${SI}"
+[ ! -z ${PG+x} ] && API_PARAMS="${API_PARAMS} --data-urlencode page=${PG}"
+
+# Validate output file is not a directory
+[[ ! -z "${OUTPUT_FILE+x}" && -d "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be a directory."
+
+rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_PEOPLE}" --endpoint "${EP}" --params="${API_PARAMS}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+}
+
+# Main function performs all of the work. This also reduces the chances of global variables being mangled.
+function threat_main() {
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) --threat-api [options]"
+	echo "Try '$(basename $0) --threat-api --help' for more information."
+	exit 1
+fi
+
+
+# Used for local getopt
+local OPTIND
+# Command line output file is stored in this variable
+local OUTPUT_FILE
+local OUTPUT_SWITCH
+local TI
+local EP="summary"
+local -r SHORTOPTS=""
+local -r LONGOPTS="threat-id:,output:"
+
+# ARGS must be predefined to avoid return value of 0 after getopt call.
+local ARGS
+ARGS=$(getopt -s bash --options "${SHORTOPTS}" --longoptions "${LONGOPTS}" --name $(basename $0) -- "$@")
+# Exit if required argument is missing.
+[ $? -ne 0 ] && exit 1
+eval set -- "$ARGS"
+
+while true
+do
+	case $1 in
+		--threat-id)
+			TI="$2"
+			shift
+		;;	
+		--output)
+			# Strip slash of path
+			OUTPUT_SWITCH="--output"
+			OUTPUT_FILE="${2%/}"
+			shift
+		;;
+	    --)
+	            shift
+	            break
+	    ;;
+	    *)
+			echo "[Error] Unhanded option: $1"
+			exit 1
+		;;
+	esac
+	shift
+done
+
+
+# Validate that all defined variables are not empty
+[[ ! -z "${OUTPUT_FILE+x}" && ! -n "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be an empty string."
+[[ ! -z "${TI+x}" && ! -n "${TI}" ]] && opt_error "Option arugment --threat-id value can not be an empty string."
+
+# Validate output file is not a directory
+[[ ! -z "${OUTPUT_FILE+x}" && -d "${OUTPUT_FILE}" ]] && opt_error "Option argument --output value can not be a directory."
+
+rest_call --scheme "${API_SCHEME}" --server "${API_SERVER}" --version "${API_VERSION}" --service "${API_SVC_THREAT}/${EP}" --endpoint "${TI}" "${OUTPUT_SWITCH}" "${OUTPUT_FILE}"
+}
+
+# This function deals with API selection
+function main() {
+
+# Default no options passed message
+if [ $# -eq 0 ]
+then
+	echo "Usage: $(basename $0) [options]"
+	echo "Try '$(basename $0) --help' for more information."
+	exit 1
+fi
+
+local FORWARD_ARGS
+
+# Count used to store number of api switches passed
+local API_COUNT=0
+# Stores the API name
+local API_TYPE
+# Argument array that will be passed forward
+local FORWARD_ARGS=()
+# Boolean check for help argument.
+local HELP
+
+while (( "$#" ))
+do
+	case $1 in
+		--siem-api)
+			API_COUNT=$((API_COUNT+1))
+			API_TYPE=$1
+		;;
+		--forensics-api)
+			API_COUNT=$((API_COUNT+1))
+			API_TYPE=$1
+		;;
+		--campaign-api)
+			API_COUNT=$((API_COUNT+1))
+			API_TYPE=$1
+		;;
+		--people-api)
+			API_COUNT=$((API_COUNT+1))
+			API_TYPE=$1
+		;;
+		--threat-api)
+			API_COUNT=$((API_COUNT+1))
+			API_TYPE=$1
+		;;
+		--help)
+			HELP=1
+		;;
+		*)
+			FORWARD_ARGS+=("$1")
+		;;
+	esac
+	shift
+done
+
+# Validate single argument for API selector type was passed. We want to prevent the user from making a mistake
+[ $API_COUNT -gt 1 ] && opt_error "API selector options --siem-api, --forensics-api, and --campaign-api can not be combined."
+
+# Deal with usage display for different components.
+if [[ ! -z "${HELP+x}" ]]
+then
+	case $API_TYPE in
+		--siem-api)
+			siem_usage
+		;;
+		--forensics-api)
+			forensics_usage
+		;;
+		--campaign-api)
+			campaign_usage
+		;;
+		--people-api)
+			people_usage
+		;;
+		--threat-api)
+			threat_usage
+		;;
+		*) 
+			api_usage
+		;;
+	esac
+	exit 0	
+fi
+
+case $API_TYPE in
+	--siem-api)
+		siem_main "${FORWARD_ARGS[@]}"
+	;;
+	--forensics-api)
+		forensics_main "${FORWARD_ARGS[@]}"
+	;;
+	--campaign-api)
+		campaign_main "${FORWARD_ARGS[@]}"
+	;;
+	--people-api)
+		people_main "${FORWARD_ARGS[@]}"
+	;;
+	--threat-api)
+		threat_main "${FORWARD_ARGS[@]}"
+	;;
+	*)
+		opt_error "Invalid arguments: '$(basename $0) --help' for more information."
+	;;
+esac
+}
+# Call entrypoint
+main "$@"
