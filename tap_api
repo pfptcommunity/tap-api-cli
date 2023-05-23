@@ -24,6 +24,7 @@
 #       05/03/2022 - Added Threat API Support 
 #       07/25/2022 - Fixed bug in range based searching temp files failing
 #       07/27/2022 - Improved the range based search and using PID for unique log
+#       05/23/2023 - Fix time range output to standard out
 #
 #
 ################################################################################
@@ -884,7 +885,8 @@ case $TIF in
 			else
 				cat /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext} 
 			fi
-			rm -v /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext}
+			# Delete to stderr
+			rm -v /tmp/$$_RANGE_${RS}_${RE}_PART*.${ext} >&2
 			return $rval
 		;;
 		*)
